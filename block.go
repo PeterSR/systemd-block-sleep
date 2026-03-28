@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -191,6 +192,22 @@ func runDaemon(endTimeStr string) {
 			}
 			state.EndTime = s.EndTime
 			timer.Reset(time.Until(s.EndTime))
+		}
+	}
+}
+
+func listAll() {
+	out, err := exec.Command("systemd-inhibit", "--list").Output()
+	if err != nil {
+		fatalf("Failed to list inhibitors: %v", err)
+	}
+
+	lines := strings.Split(strings.TrimRight(string(out), "\n"), "\n")
+	for _, line := range lines {
+		if strings.Contains(line, "block-sleep") {
+			fmt.Println(line + "  ← this tool")
+		} else {
+			fmt.Println(line)
 		}
 	}
 }

@@ -36,6 +36,8 @@ func main() {
 			fatalf("Usage: block-sleep extend <duration>")
 		}
 		extend(parseDuration(args[1]))
+	case "list-all":
+		listAll()
 	case "stop":
 		stop()
 	case "install-sudoers":
@@ -62,6 +64,7 @@ Commands:
   [duration]       Block sleep for the given duration (default: 3h)
   status           Show remaining time
   extend <dur>     Reset the block to <dur> from now
+  list-all         List all sleep inhibitors on the system
   stop             Stop blocking sleep
   install-sudoers  Install sudoers file for passwordless operation
   help             Show this help
