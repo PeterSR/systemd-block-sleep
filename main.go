@@ -4,31 +4,47 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 	"time"
 )
 
-const defaultDuration = 3 * time.Hour
+const (
+	defaultDuration = 3 * time.Hour
+	defaultWhat     = "sleep"
+)
 
 func main() {
 	args := os.Args[1:]
 
+	// Extract --what=<value> flag from anywhere in args
+	what := defaultWhat
+	var remaining []string
+	for _, a := range args {
+		if strings.HasPrefix(a, "--what=") {
+			what = strings.TrimPrefix(a, "--what=")
+		} else {
+			remaining = append(remaining, a)
+		}
+	}
+	args = remaining
+
 	if len(args) == 0 {
-		start(defaultDuration)
+		start(defaultDuration, what)
 		return
 	}
 
 	switch args[0] {
 	case "_daemon":
 		if len(args) < 2 {
-			fatalf("usage: block-sleep _daemon <end-time>")
+			fatalf("usage: block-sleep _daemon <end-time> [--what=<what>]")
 		}
-		runDaemon(args[1])
+		runDaemon(args[1], what)
 	case "start":
 		d := defaultDuration
 		if len(args) > 1 {
 			d = parseDuration(args[1])
 		}
-		start(d)
+		start(d, what)
 	case "status", "remaining":
 		showStatus()
 	case "extend":
@@ -51,12 +67,12 @@ func main() {
 			usage()
 			os.Exit(1)
 		}
-		start(d)
+		start(d, what)
 	}
 }
 
 func usage() {
-	fmt.Print(`Usage: block-sleep [command] [duration]
+	fmt.Print(`Usage: block-sleep [duration] [--what=<what>]
 
 Block system sleep using systemd-inhibit.
 
@@ -69,6 +85,14 @@ Commands:
   install-sudoers  Install sudoers file for passwordless operation
   help             Show this help
 
+Flags:
+  --what=<what>    What to inhibit, colon-separated (default: sleep)
+                   sleep             Prevent suspend/hibernate
+                   idle              Prevent screen blanking
+                   shutdown          Prevent poweroff/reboot
+                   handle-lid-switch Prevent lid switch handling
+                   Example: --what=sleep:idle
+
 Duration formats:
   2            2 hours
   1.5          1 hour 30 minutes
@@ -76,12 +100,12 @@ Duration formats:
   45m          45 minutes
 
 Examples:
-  block-sleep              Block for 3 hours
-  block-sleep 2            Block for 2 hours
-  block-sleep 1h30m        Block for 1 hour 30 minutes
-  block-sleep status       Show remaining time
-  block-sleep extend 1h    Reset to 1 hour from now
-  block-sleep stop         Stop blocking
+  block-sleep                       Block sleep for 3 hours
+  block-sleep 2                     Block sleep for 2 hours
+  block-sleep --what=sleep:idle 2h  Also prevent screen blanking
+  block-sleep status                Show remaining time
+  block-sleep extend 1h             Reset to 1 hour from now
+  block-sleep stop                  Stop blocking
 `)
 }
 

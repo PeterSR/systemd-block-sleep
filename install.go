@@ -18,7 +18,7 @@ func installSudoers() {
 		inhibitPath = "/usr/bin/systemd-inhibit"
 	}
 
-	rule := fmt.Sprintf("%s ALL=(root) NOPASSWD: %s --what=sleep --why=* --mode=block *\n",
+	rule := fmt.Sprintf("%s ALL=(root) NOPASSWD: %s --what=* --why=* --mode=block *\n",
 		u.Username, inhibitPath)
 
 	tmp, err := os.CreateTemp("", "block-sleep-sudoers-")

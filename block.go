@@ -26,6 +26,7 @@ func runtimePath(name string) string {
 type State struct {
 	PID     int       `json:"pid"`
 	EndTime time.Time `json:"end"`
+	What    string    `json:"what"`
 }
 
 func readState() (*State, error) {
@@ -67,7 +68,7 @@ func isActive() (*State, bool) {
 	return s, true
 }
 
-func start(d time.Duration) {
+func start(d time.Duration, what string) {
 	if s, active := isActive(); active {
 		rem := time.Until(s.EndTime)
 		fatalf("Already blocking (PID %d, %s remaining). Use 'extend' to change or 'stop' to cancel.", s.PID, formatDuration(rem))
@@ -80,7 +81,7 @@ func start(d time.Duration) {
 		fatalf("Failed to find executable: %v", err)
 	}
 
-	cmd := exec.Command(exe, "_daemon", endTime.Format(time.RFC3339Nano))
+	cmd := exec.Command(exe, "_daemon", endTime.Format(time.RFC3339Nano), "--what="+what)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDWR, 0)
 	if err != nil {
@@ -115,7 +116,7 @@ func start(d time.Duration) {
 //
 // The daemon blocks in select{timer, signal} — no polling, no CPU.
 // Extend sends SIGUSR1, stop sends SIGTERM.
-func runDaemon(endTimeStr string) {
+func runDaemon(endTimeStr string, what string) {
 	endTime, err := time.Parse(time.RFC3339Nano, endTimeStr)
 	if err != nil {
 		fatalf("Invalid end time: %v", err)
@@ -131,7 +132,7 @@ func runDaemon(endTimeStr string) {
 	// Start systemd-inhibit with cat reading from the FIFO
 	why := fmt.Sprintf("block-sleep until %s", endTime.Format("15:04"))
 	cmd := exec.Command("sudo", "systemd-inhibit",
-		"--what=sleep", "--why="+why, "--mode=block",
+		"--what="+what, "--why="+why, "--mode=block",
 		"cat", fifoPath)
 	if err := cmd.Start(); err != nil {
 		fatalf("Failed to start systemd-inhibit: %v", err)
@@ -164,7 +165,7 @@ func runDaemon(endTimeStr string) {
 	defer fifo.Close()
 
 	// Write state file to signal readiness
-	state := &State{PID: os.Getpid(), EndTime: endTime}
+	state := &State{PID: os.Getpid(), EndTime: endTime, What: what}
 	if err := writeState(state); err != nil {
 		fatalf("Failed to write state: %v", err)
 	}
@@ -224,7 +225,7 @@ func showStatus() {
 		return
 	}
 
-	fmt.Printf("%s remaining (until %s)\n", formatDuration(rem), s.EndTime.Format("15:04"))
+	fmt.Printf("%s remaining (until %s, blocking %s)\n", formatDuration(rem), s.EndTime.Format("15:04"), s.What)
 }
 
 func extend(d time.Duration) {
