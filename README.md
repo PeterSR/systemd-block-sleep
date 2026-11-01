@@ -96,6 +96,79 @@ block-sleep forever
 block-sleep stop
 ```
 
+### `when`: Block whenever a condition holds
+
+Unlike the other modes, `when` does not end. It holds the block while a command of yours exits 0, releases it when the command fails, and blocks again when it succeeds again. The command is not polled: it is re-run only when something you name happens.
+
+```sh
+block-sleep when '<command>' [--on-dbus=<match rule>]... [--on-dbus-session=<match rule>]...
+                            [--every=<dur>] [--grace=<dur>] [--timeout=<dur>]
+```
+
+| Trigger | Re-runs the command when |
+|---------|--------------------------|
+| (always) | the watcher starts, and the machine wakes from suspend |
+| `--on-dbus=<rule>` | a system bus signal matches the [D-Bus match rule](https://dbus.freedesktop.org/doc/dbus-specification.html#message-bus-routing-match-rules) (repeatable) |
+| `--on-dbus-session=<rule>` | the same, on your session bus |
+| `block-sleep recheck [id]` | you or a script says so |
+| `--every=<dur>` | the interval passes (off unless given; for conditions nothing announces) |
+
+- `--grace` (default `30s`): after the command fails, keep blocking this long, so a brief blip such as a Wi-Fi reconnect does not release the block. Blocking again is immediate. After a wake from suspend the block is held until at least two minutes after the wake, since the network is often still reconnecting.
+- `--timeout` (default `10s`): a check that runs longer is killed, with its whole process group, and counts as failed.
+- A trigger arriving while a check runs queues one more run; a burst of triggers never queues more than that.
+- Match rules are checked at start, so a typo fails at once instead of never firing.
+
+The watcher runs as a transient user service (`block-sleep-when-<id>.service`), so the command's output and any errors are in `journalctl --user -u block-sleep-when-<id>`. The command runs with your systemd user manager's environment, plus the `PATH` of the shell that started it (for `--persist`: the shell that ran `--persist`). Other variables from your shell are not passed.
+
+#### Example: on AC power and on a given Wi-Fi network
+
+```sh
+block-sleep when '[ "$(busctl get-property org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower OnBattery)" = "b false" ] && nmcli -t -f ACTIVE,SSID dev wifi list --rescan no | grep -qxF "yes:HomeNetwork"' \
+  --on-dbus="type='signal',sender='org.freedesktop.UPower',path='/org/freedesktop/UPower',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.freedesktop.UPower'" \
+  --on-dbus="type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.NetworkManager.Connection.Active',member='StateChanged'" \
+  --on-dbus="type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.NetworkManager'"
+```
+
+- The UPower rule fires when the machine switches between AC and battery. It does not fire on battery level changes, which UPower announces on other object paths.
+- The first NetworkManager rule fires when any connection comes up or goes down, including a switch to another network. Roaming between access points of the same network does not fire it.
+- The second NetworkManager rule fires when NetworkManager restarts, which leaves connections up and so sends no state change.
+- `--rescan no` keeps `nmcli` from starting a Wi-Fi scan on every check. In `-t` output a `:` inside an SSID is escaped as `\:`.
+- UPower is used rather than `/sys/class/power_supply/AC/online` because adapter names vary between machines (`AC`, `ADP1`, `ACAD`, ...).
+
+#### Keep it across logins: `--persist`
+
+Put the rule in the `[when]` section of the config file and install it as a user service that starts at every login:
+
+```toml
+[when]
+check = '''[ "$(busctl get-property org.freedesktop.UPower /org/freedesktop/UPower org.freedesktop.UPower OnBattery)" = "b false" ] && nmcli -t -f ACTIVE,SSID dev wifi list --rescan no | grep -qxF "yes:HomeNetwork"'''
+on_dbus = [
+  "type='signal',sender='org.freedesktop.UPower',path='/org/freedesktop/UPower',interface='org.freedesktop.DBus.Properties',member='PropertiesChanged',arg0='org.freedesktop.UPower'",
+  "type='signal',sender='org.freedesktop.NetworkManager',interface='org.freedesktop.NetworkManager.Connection.Active',member='StateChanged'",
+  "type='signal',sender='org.freedesktop.DBus',member='NameOwnerChanged',arg0='org.freedesktop.NetworkManager'",
+]
+# on_dbus_session = []
+# every = ""
+# grace = "30s"
+# timeout = "10s"
+# what = "sleep"
+```
+
+```sh
+block-sleep when --persist      # writes ~/.config/systemd/user/block-sleep-when.service, enables and starts it
+systemctl --user restart block-sleep-when.service   # after editing [when]
+block-sleep when --unpersist    # stops, disables and removes it
+```
+
+The unit only points at the config, so the rule never has to survive systemd's quoting. It runs the `block-sleep` binary that ran `--persist`, so run it from the installed copy, not a build in a source tree. `block-sleep when` without a command runs the `[when]` rule once, as a non-persistent block. A bare `block-sleep stop` leaves the persistent block running; `block-sleep stop <id>` stops it until the next login.
+
+Things to know:
+
+- **Lid close.** By default logind suspends on lid close even while a `sleep` block is held (`LidSwitchIgnoreInhibited=yes`). To also keep the machine awake with the lid closed, add `--what=sleep:handle-lid-switch` (or `what = "sleep:handle-lid-switch"` in `[when]`).
+- **Logout.** Without lingering, your user manager, and the watcher with it, stops when you log out. `loginctl enable-linger` keeps it running.
+- **No sudo needed on systemd 256 and later.** `when` asks logind for the block directly, which polkit allows for your user manager from systemd 256. On older systemd it falls back to the `install-sudoers` rule.
+- **Recheck from root hooks.** A NetworkManager dispatcher script or a udev `RUN` runs as root, whose runtime directory is not yours: use `runuser -u <you> -- env XDG_RUNTIME_DIR=/run/user/<uid> block-sleep recheck`.
+
 ## Multiple Concurrent Blocks
 
 You can have multiple blocks active simultaneously. Each gets an auto-assigned ID. The system stays awake as long as ANY block is active (this is handled natively by `systemd-inhibit`).
@@ -122,8 +195,9 @@ Sleep block stopped.
 
 ```sh
 block-sleep status                  # show all active blocks
-block-sleep stop                    # stop ALL active blocks
+block-sleep stop                    # stop ALL active blocks (except a persistent `when`)
 block-sleep stop <id>               # stop a specific block
+block-sleep recheck [id]            # re-run the condition of `when` blocks now
 block-sleep extend 1h               # extend a timer block (for/until)
 block-sleep extend 1h --id=2        # extend a specific block
 block-sleep list-all                # list all systemd inhibitors
@@ -247,7 +321,7 @@ block-sleep await "virsh domstate myvm | grep -q running" --every=60s
 # Block while audio is playing
 block-sleep await "pactl list sinks | grep -q RUNNING" --every=15s
 
-# Block while on AC power
+# Block while on AC power (polling; see `when` for an event-driven, re-arming version)
 block-sleep await "cat /sys/class/power_supply/AC/online | grep -q 1" --every=60s
 ```
 
@@ -346,6 +420,8 @@ Each block gets its own daemon, FIFO, and state file. Multiple blocks coexist na
 
 - **stop** sends `SIGTERM` to the daemon (a user-space process, no sudo needed)
 - **extend** updates the state file and sends `SIGUSR1` to wake the daemon, which resets its timer
+
+`when` is different: its watcher runs as a user service and takes the block from logind over D-Bus, holding the returned file descriptor while armed and closing it to release. It sleeps on D-Bus signals, `SIGUSR1` (`recheck`), the grace timer and the optional `--every` ticker.
 
 State is stored in `$XDG_RUNTIME_DIR/block-sleep/` (falls back to `/tmp/block-sleep/`).
 

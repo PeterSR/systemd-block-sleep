@@ -7,7 +7,8 @@ build:
 
 install: build
 	mkdir -p $(PREFIX)
-	cp block-sleep $(PREFIX)/
+	install -m755 block-sleep $(PREFIX)/
+	-systemctl --user try-restart block-sleep-when.service 2>/dev/null
 
 clean:
 	rm -f block-sleep

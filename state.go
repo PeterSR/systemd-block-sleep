@@ -25,6 +25,14 @@ type State struct {
 	EndTime time.Time  `json:"end,omitempty"`
 	While   *WhileInfo `json:"while,omitempty"`
 	Started time.Time  `json:"started"`
+
+	// "when" mode only.
+	When      *WhenSpec `json:"when,omitempty"`
+	Unit      string    `json:"unit,omitempty"`
+	Armed     bool      `json:"armed,omitempty"`
+	Releasing bool      `json:"releasing,omitempty"`
+	LastCheck time.Time `json:"last_check,omitzero"`
+	LastExit  *int      `json:"last_exit,omitempty"`
 }
 
 func stateDir() string {
@@ -66,7 +74,12 @@ func writeState(s *State) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(statePath(s.ID), data, 0644)
+	// Write then rename, so a concurrent `status` never reads a half-written file.
+	tmp := statePath(s.ID) + ".tmp"
+	if err := os.WriteFile(tmp, data, 0644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, statePath(s.ID))
 }
 
 func removeState(id int) {
@@ -82,6 +95,9 @@ func processExists(pid int) bool {
 }
 
 func isBlockActive(s *State) bool {
+	if s.Unit != "" {
+		return unitAlive(s)
+	}
 	return s.PID > 0 && processExists(s.PID)
 }
 

@@ -20,6 +20,7 @@ type DefaultConfig struct {
 
 type Config struct {
 	Default DefaultConfig `toml:"default"`
+	When    WhenSpec      `toml:"when"`
 }
 
 func configPath() string {

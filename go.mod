@@ -2,4 +2,9 @@ module github.com/PeterSR/systemd-block-sleep
 
 go 1.25.7
 
-require github.com/BurntSushi/toml v1.6.0 // indirect
+require (
+	github.com/BurntSushi/toml v1.6.0
+	github.com/godbus/dbus/v5 v5.2.4
+)
+
+require golang.org/x/sys v0.27.0 // indirect

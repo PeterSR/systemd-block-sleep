@@ -57,6 +57,7 @@ func main() {
 		return
 	}
 
+	explicitWhat := what
 	if what == "" {
 		what = defaultWhat
 	}
@@ -82,6 +83,23 @@ func main() {
 			fatalf("Invalid daemon ID: %s", args[1])
 		}
 		runDaemon(id)
+
+	case "_when":
+		runWhen(args[1:], explicitWhat, configFile)
+
+	case "when":
+		cmdWhen(args[1:], explicitWhat, configFile)
+
+	case "recheck":
+		if len(args) > 1 {
+			id, err := strconv.Atoi(args[1])
+			if err != nil {
+				fatalf("Invalid block ID: %s", args[1])
+			}
+			recheck(id)
+		} else {
+			recheck(-1)
+		}
 
 	case "for":
 		d := 1 * time.Hour
@@ -332,6 +350,8 @@ func showStatus() {
 				fmt.Printf("#%d  %s (%s remaining, until %s) [%s]\n",
 					s.ID, s.Mode, formatDuration(rem), s.EndTime.Format("15:04"), s.What)
 			}
+		case "when":
+			fmt.Printf("#%d  %s [%s]\n", s.ID, describeWhen(s), s.What)
 		default:
 			elapsed := time.Since(s.Started)
 			desc := s.Mode
@@ -397,10 +417,20 @@ func stopByID(id int) {
 	if err != nil {
 		fatalf("No block with ID #%d.", id)
 	}
-	if !processExists(s.PID) {
+	if !isBlockActive(s) {
 		removeState(id)
 		os.Remove(blockFifoPath(id))
 		fatalf("No active block with ID #%d (cleaned up stale state).", id)
+	}
+
+	if s.Unit != "" {
+		stopUnit(s)
+		if s.Unit == persistUnitName {
+			fmt.Printf("Block #%d stopped until next login or restart. To remove it for good: block-sleep when --unpersist\n", id)
+		} else {
+			fmt.Printf("Block #%d stopped.\n", id)
+		}
+		return
 	}
 
 	syscall.Kill(s.PID, syscall.SIGTERM)
@@ -419,12 +449,31 @@ func stopAll() {
 	if err != nil {
 		fatalf("Failed to read state: %v", err)
 	}
+	var kept *State
+	var toStop []*State
+	for _, s := range states {
+		if s.Unit == persistUnitName {
+			kept = s
+			continue
+		}
+		toStop = append(toStop, s)
+	}
+	if kept != nil {
+		defer fmt.Printf("Kept the persistent block #%d (stop it with: block-sleep stop %d).\n", kept.ID, kept.ID)
+	}
+	states = toStop
 	if len(states) == 0 {
-		fmt.Println("No active sleep blocks.")
+		if kept == nil {
+			fmt.Println("No active sleep blocks.")
+		}
 		return
 	}
 
 	for _, s := range states {
+		if s.Unit != "" {
+			stopUnit(s)
+			continue
+		}
 		syscall.Kill(s.PID, syscall.SIGTERM)
 	}
 
@@ -477,11 +526,14 @@ Modes:
   await <pid-or-cmd>      Block while a PID lives or command succeeds
   hold <pipe-path>        Block until pipe receives data
   forever                 Block until explicit stop
+  when '<cmd>' [triggers]  Block whenever a command succeeds, re-checked on events
+  when --persist          Same, from the [when] config, as a user service at every login
 
 Management:
   status                  Show active blocks
   extend <dur> [--id=N]   Reset a timer block to <dur> from now
-  stop [id]               Stop a block (or all blocks)
+  stop [id]               Stop a block (or all blocks, except a persistent 'when')
+  recheck [id]            Re-run the condition of 'when' blocks now
   list-all                List all sleep inhibitors on the system
   install-sudoers         Install sudoers file for passwordless operation
   help                    Show this help
@@ -489,6 +541,15 @@ Management:
 Global flags:
   --what=<what>           What to inhibit (default: sleep)
   --config=<path>         Config file path override
+
+Options for 'when':
+  --on-dbus=<match rule>          Re-check on a matching system bus signal (repeatable)
+  --on-dbus-session=<match rule>  Same, on the session bus
+  --every=<dur>                   Also re-check on an interval (off by default)
+  --grace=<dur>                   Keep blocking this long after the check fails (default 30s)
+  --timeout=<dur>                 Kill a check running longer than this (default 10s)
+  --persist / --unpersist         Install / remove the persistent user service
+  The condition is always checked at start and after resume from suspend.
 
 Duration formats:
   2            2 hours
@@ -519,6 +580,8 @@ Examples:
   block-sleep extend 1h --id=2             Reset a specific block
   block-sleep stop                         Stop all blocks
   block-sleep stop 1                       Stop block #1
+  block-sleep when 'pgrep -x rsync' --every=1m
+  block-sleep when 'test -e /tmp/keep-awake' --on-dbus="type='signal',sender='org.freedesktop.login1'"
 `)
 }
 
