@@ -1,5 +1,8 @@
 # block-sleep
 
+> [!IMPORTANT]
+> **This project is archived.** It is replaced by [systemd-whilst](https://github.com/PeterSR/systemd-whilst), which does everything block-sleep does and more: rules over facts from D-Bus, systemd units, commands and files, holding inhibitor locks (including the lid switch) and user units while conditions hold. The last release is [v1.0.0](https://github.com/PeterSR/systemd-block-sleep/releases/tag/v1.0.0). See [Migrating to whilst](#migrating-to-whilst).
+
 Temporarily block system sleep on Linux using `systemd-inhibit`. Supports multiple blocking modes: duration, deadline, process watching, command polling, pipe signaling, and indefinite.
 
 ## Install
@@ -26,7 +29,7 @@ This is idempotent and writes `/etc/sudoers.d/block-sleep-<username>` with a rul
 
 ## Modes
 
-### `for` — Block for a duration
+### `for`: Block for a duration
 
 ```sh
 block-sleep for 2h           # 2 hours
@@ -38,7 +41,7 @@ block-sleep for 2h30m        # 2 hours 30 minutes
 Running bare `block-sleep` with no arguments uses the default action from the config file (see below). If no config file exists, it shows an error directing you to create one or specify a command.
 
 
-### `until` — Block until a time
+### `until`: Block until a time
 
 ```sh
 block-sleep until 22:00                  # today, or tomorrow if already past
@@ -46,7 +49,7 @@ block-sleep until 2026-03-30T08:00       # absolute datetime
 block-sleep until 2026-03-30 08:00       # same, with space
 ```
 
-### `run` — Block while a command runs
+### `run`: Block while a command runs
 
 Runs a command in the foreground with full stdio passthrough. Sleep is blocked while the command runs, and the exit code is forwarded.
 
@@ -56,7 +59,7 @@ block-sleep run -- rsync -av src/ dest/
 block-sleep run -- docker compose up
 ```
 
-### `await` — Block while a PID or condition is true
+### `await`: Block while a PID or condition is true
 
 Watch a process by PID (uses `pidfd_open` for zero-polling, event-driven exit detection on Linux 5.3+):
 
@@ -75,7 +78,7 @@ block-sleep await "curl -sf http://localhost:8080/health" --every=10s
 
 Default poll interval is 30 seconds.
 
-### `hold` — Block until a pipe receives data
+### `hold`: Block until a pipe receives data
 
 Creates a FIFO and blocks until something writes to it. Useful for script-based control.
 
@@ -86,7 +89,7 @@ block-sleep hold /tmp/my-trigger
 echo > /tmp/my-trigger       # releases the block
 ```
 
-### `forever` — Block indefinitely
+### `forever`: Block indefinitely
 
 Blocks until explicitly stopped with `block-sleep stop`.
 
@@ -424,6 +427,65 @@ Each block gets its own daemon, FIFO, and state file. Multiple blocks coexist na
 `when` is different: its watcher runs as a user service and takes the block from logind over D-Bus, holding the returned file descriptor while armed and closing it to release. It sleeps on D-Bus signals, `SIGUSR1` (`recheck`), the grace timer and the optional `--every` ticker.
 
 State is stored in `$XDG_RUNTIME_DIR/block-sleep/` (falls back to `/tmp/block-sleep/`).
+
+## Migrating to whilst
+
+[whilst](https://github.com/PeterSR/systemd-whilst) runs as one user service that takes inhibitor locks through logind directly, so it needs no sudoers rule.
+
+### One-off blocks
+
+| block-sleep | whilst |
+|---|---|
+| `block-sleep for 2h` | `whilst ensure 2h inhibit=sleep` |
+| `block-sleep until 22:00` | `whilst ensure --until 22:00 inhibit=sleep` |
+| `block-sleep run -- cmd` | `whilst ensure inhibit=sleep -- cmd` |
+| `block-sleep await PID` | `whilst ensure inhibit=sleep --pid PID` |
+| `block-sleep forever` | `whilst ensure inhibit=sleep` |
+| `block-sleep status` | `whilst status` |
+| `block-sleep stop` | `whilst release --all` |
+
+`hold` (pipe signaling) and `extend` have no direct equivalent. Use `ensure -- cmd` or `--pid` instead of a pipe, and run `ensure` again instead of `extend`.
+
+### A persistent `when` rule
+
+The [example above](#example-on-ac-power-and-on-a-given-wi-fi-network) (block sleep on AC power and on a given Wi-Fi network) needs no shell command or match rules in whilst. Built-in presets supply the power and network facts, and they are kept current from D-Bus signals. In `~/.config/whilst/config.toml`:
+
+```toml
+include = ["preset:upower", "preset:networkmanager"]
+
+[fact.home]
+expr = "ssid == 'HomeNetwork'"
+
+[[rule]]
+name    = "home-on-mains"
+while   = "ac && home"
+inhibit = ["sleep"]
+```
+
+whilst can also do what block-sleep could not, for example keeping the lid from suspending for 30 minutes after unplugging:
+
+```toml
+[[rule]]
+name    = "just-unplugged"
+while   = "!ac && since('ac') < duration('30m')"
+inhibit = ["handle-lid-switch"]
+```
+
+Then switch over:
+
+```sh
+# install whilst: download whilst-linux-amd64 from
+# https://github.com/PeterSR/systemd-whilst/releases/latest, then
+chmod +x whilst-linux-amd64
+./whilst-linux-amd64 install
+whilst doctor && whilst status
+
+# remove block-sleep
+systemctl --user disable --now block-sleep-when.service
+rm -f ~/.config/systemd/user/block-sleep-when.service ~/bin/block-sleep
+systemctl --user daemon-reload
+sudo rm -f /etc/sudoers.d/block-sleep-$USER
+```
 
 ## License
 
